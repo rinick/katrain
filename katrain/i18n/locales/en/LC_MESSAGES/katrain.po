@@ -952,6 +952,10 @@ msgid "top_move_delta_score"
 msgstr "Change in score"
 
 #. Dropdown menu option
+msgid "top_move_gain_score"
+msgstr "Score gain"
+
+#. Dropdown menu option
 msgid "top_move_score"
 msgstr "Score"
 

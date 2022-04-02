@@ -431,12 +431,19 @@ class GameNode(SGFNode):
         move_dicts = list(self.analysis["moves"].values())  # prevent incoming analysis from causing crash
         top_move = [d for d in move_dicts if d["order"] == 0]
         top_score_lead = top_move[0]["scoreLead"] if top_move else root_score
+
+        pass_move = [d for d in move_dicts if d["move"] == 'pass']
+        pass_score_lead = pass_move[0]["scoreLead"] if pass_move else top_score_lead
+        if pass_move and self.ruleset != 'japanese' and self.ruleset != 'korean':
+            pass_score_lead += 1
+
         return sorted(
             [
                 {
                     "pointsLost": self.player_sign(self.next_player) * (root_score - d["scoreLead"]),
                     "relativePointsLost": self.player_sign(self.next_player) * (top_score_lead - d["scoreLead"]),
                     "winrateLost": self.player_sign(self.next_player) * (root_winrate - d["winrate"]),
+                    "pointsGain": self.player_sign(self.next_player) * (d["scoreLead"] - pass_score_lead),
                     **d,
                 }
                 for d in move_dicts
