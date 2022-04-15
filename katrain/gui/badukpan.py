@@ -539,8 +539,9 @@ class BadukPanWidget(Widget):
                                 *Theme.STONE_COLORS[ix_owner][:3], abs(ownership_grid[y][x]) * Theme.OWNERSHIP_MAX_ALPHA
                             )
                             Rectangle(
-                                pos=(self.gridpos[y,x,0] - self.grid_size / 2, self.gridpos[y,x,1] - self.grid_size / 2),
-                                size=(self.grid_size, self.grid_size),
+
+                                pos=(self.gridpos[y,x,0] - self.grid_size * 0.4, self.gridpos[y,x,1] - self.grid_size * 0.4),
+                                size=(self.grid_size * 0.8, self.grid_size * 0.8),
                             )
 
             # stones
