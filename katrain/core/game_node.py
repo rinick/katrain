@@ -419,6 +419,7 @@ class GameNode(SGFNode):
                 {
                     **self.analysis["root"],
                     "pointsLost": 0,
+                    "pointsGain": 0,
                     "winrateLost": 0,
                     "order": 0,
                     "move": top_polmove.gtp(),
