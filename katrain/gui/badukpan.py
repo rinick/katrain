@@ -1,11 +1,12 @@
 import math
-import random
 import time
 from typing import List, Optional
+import copy
 
 from kivy.clock import Clock
 from kivy.core.window import Window
-from kivy.graphics.context_instructions import Color
+from kivy.graphics.texture import Texture
+from kivy.graphics.context_instructions import Color, Rotate, Translate, PushMatrix, PopMatrix
 from kivy.graphics.vertex_instructions import Ellipse, Line, Rectangle
 from kivy.metrics import dp
 from kivy.properties import BooleanProperty, ListProperty, NumericProperty, ObjectProperty
@@ -14,7 +15,6 @@ from kivy.uix.widget import Widget
 from kivymd.app import MDApp
 from kivymd.uix.boxlayout import MDBoxLayout
 from kivymd.uix.floatlayout import MDFloatLayout
-from katrain.gui.sound import play_sound
 
 from katrain.core.constants import (
     MODE_PLAY,
@@ -41,11 +41,12 @@ from katrain.gui.theme import Theme
 class BadukPanWidget(Widget):
     def __init__(self, **kwargs):
         super(BadukPanWidget, self).__init__(**kwargs)
-        self.stones_sounds = []
         self.trainer_config = {}
         self.ghost_stone = []
-        self.gridpos_x = []
-        self.gridpos_y = []
+        self.gridpos = None
+        self.initial_gridpos_x = []
+        self.initial_gridpos_y = []
+        self.rotation_degree = 0
         self.grid_size = 0
         self.stone_size = 0
         self.selecting_region_of_interest = False
@@ -63,6 +64,10 @@ class BadukPanWidget(Widget):
         self.bind(size=self.redraw_trigger, pos=self.redraw_trigger)
         Clock.schedule_interval(self.animate_pv, 0.1)
 
+    def reset_rotation(self):
+        while self.rotation_degree:
+            self.rotate_gridpos()
+
     def toggle_coordinates(self):
         self.draw_coords_enabled = not self.draw_coords_enabled
         self.redraw_trigger()
@@ -71,18 +76,25 @@ class BadukPanWidget(Widget):
     def get_enable_coordinates(self):
         return self.draw_coords_enabled
 
-    def play_stone_sound(self, *_args):
-        play_sound(random.choice(Theme.STONE_SOUNDS))
-
     # stone placement functions
-    def _find_closest(self, pos, gridpos):
-        return sorted([(abs(p - pos), i) for i, p in enumerate(gridpos)])[0]
+    def _find_closest(self, pos_x, pos_y):
+        xd = abs(self.gridpos[0][0][0] - pos_x)
+        xp = 0
+        yd = abs(self.gridpos[0][0][1] - pos_y)
+        yp = 0
+        for y in range(0, len(self.gridpos)):
+            for x in range(0, len(self.gridpos[0])):
+                if abs(self.gridpos[y][x][0] - pos_x) <= xd and abs(self.gridpos[y][x][1] - pos_y) <= yd:
+                    xd = abs(self.gridpos[y][x][0] - pos_x)
+                    xp = x
+                    yd = abs(self.gridpos[y][x][1] - pos_y)
+                    yp = y
+        return xd, xp, yd, yp
 
     def check_next_move_ghost(self, touch):
-        if not self.gridpos_x:
+        if not self.initial_gridpos_x:
             return
-        xd, xp = self._find_closest(touch.x, self.gridpos_x)
-        yd, yp = self._find_closest(touch.y, self.gridpos_y)
+        xd, xp, yd, yp = self._find_closest(touch.x, touch.y)
         prev_ghost = self.ghost_stone
         if max(yd, xd) < self.grid_size / 2 and (xp, yp) not in [m.coords for m in self.katrain.game.stones]:
             self.ghost_stone = (xp, yp)
@@ -92,10 +104,9 @@ class BadukPanWidget(Widget):
             self.redraw_hover_contents_trigger()
 
     def update_box_selection(self, touch, second_point=True):
-        if not self.gridpos_x:
+        if not self.initial_gridpos_x:
             return
-        _, xp = self._find_closest(touch.x, self.gridpos_x)
-        _, yp = self._find_closest(touch.y, self.gridpos_y)
+        _, xp, _, yp = self._find_closest(touch.x, touch.y)
         if second_point and len(self.region_of_interest) == 4:
             self.region_of_interest[1] = xp
             self.region_of_interest[3] = yp
@@ -141,10 +152,10 @@ class BadukPanWidget(Widget):
                 near_move = [
                     (pv, node)
                     for move, pv, node in self.active_pv_moves
-                    if move[0] < len(self.gridpos_x)
-                    and move[1] < len(self.gridpos_y)
-                    and abs(rel_pos[0] - self.gridpos_x[move[0]]) < self.grid_size / 2
-                    and abs(rel_pos[1] - self.gridpos_y[move[1]]) < self.grid_size / 2
+                    if move[0] < len(self.gridpos[0])
+                    and move[1] < len(self.gridpos)
+                    and abs(rel_pos[0] - self.gridpos[move[1]][move[0]][0]) < self.grid_size / 2
+                    and abs(rel_pos[1] - self.gridpos[move[1]][move[0]][1]) < self.grid_size / 2
                 ]
                 if near_move:
                     self.set_animating_pv(near_move[0][0], near_move[0][1])
@@ -152,12 +163,12 @@ class BadukPanWidget(Widget):
                     self.set_animating_pv(None, None)  # any click kills PV from label/move
             if inside and self.animating_pv is not None:
                 d_sq = (pos[0] - self.animating_pv[3][0]) ** 2 + (pos[1] - self.animating_pv[3][1])
-                if d_sq > 2 * self.stone_size ** 2:  # move too far from where it was activated
+                if d_sq > 2 * self.stone_size**2:  # move too far from where it was activated
                     self.set_animating_pv(None, None)  # any click kills PV from label/move
             self.last_mouse_pos = pos
 
     def on_touch_up(self, touch):
-        if ("button" in touch.profile and touch.button != "left") or not self.gridpos_x:
+        if ("button" in touch.profile and touch.button != "left") or not self.initial_gridpos_x:
             return
         katrain = self.katrain
         if self.selecting_region_of_interest:
@@ -183,11 +194,8 @@ class BadukPanWidget(Widget):
                 )
             else:
                 katrain("play", self.ghost_stone)
-                self.play_stone_sound()
         elif not self.ghost_stone:
-            xd, xp = self._find_closest(touch.x, self.gridpos_x)
-            yd, yp = self._find_closest(touch.y, self.gridpos_y)
-
+            xd, xp, yd, yp = self._find_closest(touch.x, touch.y)
             nodes_here = [
                 node for node in katrain.game.current_node.nodes_from_root if node.move and node.move.coords == (xp, yp)
             ]
@@ -219,14 +227,57 @@ class BadukPanWidget(Widget):
         self.draw_board()
         self.draw_board_contents()
 
-    def draw_stone(self, x, y, player, alpha=1, innercol=None, evalcol=None, evalscale=1.0, scale=1.0):
+    def draw_stone(
+        self, x, y, player, alpha=1, innercol=None, evalcol=None, evalscale=1.0, scale=1.0, ownership=None, loss=None
+    ):
         stone_size = self.stone_size * scale
+        if ownership is not None:
+            (owner, other) = ("B", "W") if ownership > 0 else ("W", "B")
+            if Theme.TERRITORY_DISPLAY != "marks":
+                if player == owner:
+                    alpha = Theme.STONE_MIN_ALPHA + (1.0 - Theme.STONE_MIN_ALPHA) * abs(ownership)
+                else:
+                    alpha = Theme.STONE_MIN_ALPHA
+        else:
+            (owner, other) = ("B", "W")  # prevent errors in unused unset vars
         Color(1, 1, 1, alpha)
         Rectangle(
-            pos=(self.gridpos_x[x] - stone_size, self.gridpos_y[y] - stone_size),
+            pos=(self.gridpos[y][x][0] - stone_size, self.gridpos[y][x][1] - stone_size),
             size=(2 * stone_size, 2 * stone_size),
             texture=cached_texture(Theme.STONE_TEXTURE[player]),
         )
+        # Draw ownership marks on stones; the mark is a square with an outline.
+        if (ownership is not None or loss is not None) and (
+            Theme.STONE_MARKS == "all" or (Theme.STONE_MARKS == "weak" and player != owner)
+        ):
+            if ownership is not None:
+                mark_color = *Theme.STONE_COLORS[owner][:3], 1.0
+                other_color = *Theme.STONE_COLORS[other][:3], 1.0
+                outline_color = tuple(map(lambda y: sum(y) / float(len(y)), zip(*(mark_color, other_color))))
+            else:
+                assert loss is not None
+                mark_color = *Theme.EVAL_COLORS[self.trainer_config["theme"]][1][:3], 1
+                outline_color = mark_color
+
+            mark_size = Theme.MARK_SIZE * abs(ownership if ownership else min(1, loss)) * self.stone_size * 2.0
+            Color(*mark_color)
+            Rectangle(
+                pos=(
+                    self.gridpos[y][x][0] - mark_size / 2,
+                    self.gridpos[y][x][1] - mark_size / 2,
+                ),
+                size=(mark_size, mark_size),
+            )
+            Color(*outline_color)
+            Line(
+                rectangle=(
+                    self.gridpos[y][x][0] - mark_size / 2,
+                    self.gridpos[y][x][1] - mark_size / 2,
+                    mark_size,
+                    mark_size,
+                ),
+                width=1.0,
+            )
         if evalcol:
             eval_radius = math.sqrt(evalscale)  # scale area by evalscale
             evalsize = self.stone_size * (
@@ -234,7 +285,7 @@ class BadukPanWidget(Widget):
             )
             Color(*evalcol)
             Rectangle(
-                pos=(self.gridpos_x[x] - evalsize, self.gridpos_y[y] - evalsize),
+                pos=(self.gridpos[y][x][0] - evalsize, self.gridpos[y][x][1] - evalsize),
                 size=(2 * evalsize, 2 * evalsize),
                 texture=cached_texture(Theme.EVAL_DOT_TEXTURE),
             )
@@ -242,7 +293,7 @@ class BadukPanWidget(Widget):
             Color(*innercol)
             inner_size = stone_size * 0.8
             Rectangle(
-                pos=(self.gridpos_x[x] - inner_size, self.gridpos_y[y] - inner_size),
+                pos=(self.gridpos[y][x][0] - inner_size, self.gridpos[y][x][1] - inner_size),
                 size=(2 * inner_size, 2 * inner_size),
                 texture=cached_texture(Theme.LAST_MOVE_TEXTURE),
             )
@@ -261,93 +312,284 @@ class BadukPanWidget(Widget):
 
         with self.canvas.before:
             self.canvas.before.clear()
-            # set up margins and grid lines
-            if self.draw_coords_enabled:
-                grid_spaces_margin_x = [1.5, 0.75]  # left, right
-                grid_spaces_margin_y = [1.5, 0.75]  # bottom, top
-            else:  # no coordinates means remove the offset
-                grid_spaces_margin_x = [0.75, 0.75]  # left, right
-                grid_spaces_margin_y = [0.75, 0.75]  # bottom, top
-            x_grid_spaces = board_size_x - 1 + sum(grid_spaces_margin_x)
-            y_grid_spaces = board_size_y - 1 + sum(grid_spaces_margin_y)
-            # grid size is rounded to an integer to avoid rounding errors that
-            # produce tiny gaps between shaded grid squares
-            self.grid_size = math.floor(min(self.width / x_grid_spaces, self.height / y_grid_spaces) + 0.1)
-            board_width_with_margins = x_grid_spaces * self.grid_size
-            board_height_with_margins = y_grid_spaces * self.grid_size
-            extra_px_margin_x = (self.width - board_width_with_margins) / 2
-            extra_px_margin_y = (self.height - board_height_with_margins) / 2
-            self.stone_size = self.grid_size * Theme.STONE_SIZE
 
-            self.gridpos_x = [
-                self.pos[0] + extra_px_margin_x + math.floor((grid_spaces_margin_x[0] + i) * self.grid_size + 0.5)
-                for i in range(board_size_x)
-            ]
-            self.gridpos_y = [
-                self.pos[1] + extra_px_margin_y + math.floor((grid_spaces_margin_y[0] + i) * self.grid_size + 0.5)
-                for i in range(board_size_y)
-            ]
-
-            if katrain.game.insert_mode:
-                Color(*Theme.INSERT_BOARD_COLOR_TINT)  # dreamy
-            else:
-                Color(*Theme.BOARD_COLOR_TINT)  # image is a bit too light
-            Rectangle(
-                pos=(
-                    self.gridpos_x[0] - self.grid_size * grid_spaces_margin_x[0],
-                    self.gridpos_y[0] - self.grid_size * grid_spaces_margin_y[0],
-                ),
-                size=(self.grid_size * x_grid_spaces, self.grid_size * y_grid_spaces),
-                texture=cached_texture(Theme.BOARD_TEXTURE),
+            grid_spaces_margin_x, grid_spaces_margin_y = self.get_grid_spaces_margins()
+            h = round(self.height, 4)
+            w = round(self.width, 4)
+            x_grid_spaces, y_grid_spaces = self.calculate_grid_spaces(
+                board_size_x, board_size_y, grid_spaces_margin_x, grid_spaces_margin_y
             )
+            self.grid_size = self.calculate_grid_size(w, h, x_grid_spaces, y_grid_spaces)
+            board_width_with_margins, board_height_with_margins = self.calculate_board_margins(
+                x_grid_spaces, y_grid_spaces, self.grid_size
+            )
+            extra_px_margin_x, extra_px_margin_y = self.calculate_extra_px_margins(
+                w, h, board_width_with_margins, board_height_with_margins
+            )
+            self.stone_size = self.calculate_stone_size(self.grid_size)
+            # if not initiated or if changed
+            if (
+                self.gridpos is None
+                or abs(
+                    self.pos[0]
+                    + extra_px_margin_x
+                    + math.floor(grid_spaces_margin_x[0] * self.grid_size + 0.5)
+                    - self.initial_gridpos_x[0]
+                )
+                > 0.001
+            ):
+                self.initial_gridpos_x, self.initial_gridpos_y = self.initialize_gridpos_x_y(
+                    board_size_x,
+                    board_size_y,
+                    grid_spaces_margin_x,
+                    grid_spaces_margin_y,
+                    extra_px_margin_x,
+                    extra_px_margin_y,
+                    self.grid_size,
+                )
+                if self.rotation_degree == 0:
+                    self.initialize_gridpos()
 
-            Color(*Theme.LINE_COLOR)
+            if (self.rotation_degree == 90 or self.rotation_degree == 270) and board_size_x != board_size_y:
+                # Note that we use the board_size_y, board_size_x order for this rotation.
+                x_grid_spaces, y_grid_spaces = self.calculate_grid_spaces(
+                    board_size_y, board_size_x, grid_spaces_margin_x, grid_spaces_margin_y
+                )
+                self.grid_size = self.calculate_grid_size(w, h, x_grid_spaces, y_grid_spaces)
+                self.stone_size = self.calculate_stone_size(self.grid_size)
+                current_gridpos_x, current_gridpos_y = self.calculate_rotated_gridpos()
+            else:
+                current_gridpos_x = self.initial_gridpos_x[:]
+                current_gridpos_y = self.initial_gridpos_y[:]
+
+            # if window size got changed
+            if (
+                self.gridpos[0][0][0] not in current_gridpos_x
+                or self.gridpos[0][0][1] not in current_gridpos_y
+                or (
+                    self.gridpos[len(self.gridpos) - 1][len(self.gridpos[0]) - 1][0] in current_gridpos_x
+                    or self.gridpos[len(self.gridpos) - 1][len(self.gridpos[0]) - 1][1] in current_gridpos_y
+                )
+            ):
+                self.resize_board()
+
+            self.draw_board_background(
+                katrain,
+                current_gridpos_x,
+                current_gridpos_y,
+                x_grid_spaces,
+                y_grid_spaces,
+                grid_spaces_margin_x,
+                grid_spaces_margin_y,
+            )
+            self.draw_lines(current_gridpos_x, current_gridpos_y)
+            self.draw_star_points(board_size_x, board_size_y)
+            self.draw_coordinates(current_gridpos_x, current_gridpos_y)
+
+    def get_grid_spaces_margins(self):
+        if self.draw_coords_enabled:
+            grid_spaces_margin_x = [1.5, 0.75]  # left, right
+            grid_spaces_margin_y = [1.5, 0.75]  # bottom, top
+        else:  # no coordinates means remove the offset
+            grid_spaces_margin_x = [0.75, 0.75]  # left, right
+            grid_spaces_margin_y = [0.75, 0.75]  # bottom, top
+        return grid_spaces_margin_x, grid_spaces_margin_y
+
+    def calculate_grid_spaces(self, board_size_x, board_size_y, grid_spaces_margin_x, grid_spaces_margin_y):
+        x_grid_spaces = board_size_x - 1 + sum(grid_spaces_margin_x)
+        y_grid_spaces = board_size_y - 1 + sum(grid_spaces_margin_y)
+
+        return x_grid_spaces, y_grid_spaces
+
+    def calculate_grid_size(self, width, height, x_grid_spaces, y_grid_spaces):
+        # grid size is rounded to an integer to avoid rounding errors that
+        # produce tiny gaps between shaded grid squares
+        return math.floor(min(width / x_grid_spaces, height / y_grid_spaces) + 0.1)
+
+    def calculate_board_margins(self, x_grid_spaces, y_grid_spaces, grid_size):
+        board_width_with_margins = x_grid_spaces * grid_size
+        board_height_with_margins = y_grid_spaces * grid_size
+
+        return board_width_with_margins, board_height_with_margins
+
+    def calculate_extra_px_margins(self, width, height, board_width_with_margins, board_height_with_margins):
+        extra_px_margin_x = round((width - board_width_with_margins) / 2, 4)
+        extra_px_margin_y = round((height - board_height_with_margins) / 2, 4)
+
+        return extra_px_margin_x, extra_px_margin_y
+
+    def calculate_stone_size(self, grid_size):
+        return grid_size * Theme.STONE_SIZE
+
+    def initialize_gridpos(self):
+        self.gridpos = [[None for x in range(len(self.initial_gridpos_x))] for y in range(len(self.initial_gridpos_y))]
+        # [[None]*len(self.initial_gridpos_x)]*len(self.initial_gridpos_y)
+        for y in range(len(self.initial_gridpos_y)):
+            for x in range(len(self.initial_gridpos_x)):
+                self.gridpos[y][x] = [self.initial_gridpos_x[x], self.initial_gridpos_y[y]]
+
+    def initialize_gridpos_x_y(
+        self,
+        board_size_x,
+        board_size_y,
+        grid_spaces_margin_x,
+        grid_spaces_margin_y,
+        extra_px_margin_x,
+        extra_px_margin_y,
+        grid_size,
+    ):
+        gridpos_x = [
+            round(self.pos[0] + extra_px_margin_x + math.floor((grid_spaces_margin_x[0] + i) * grid_size + 0.5), 4)
+            for i in range(board_size_x)
+        ]
+        gridpos_y = [
+            round(self.pos[1] + extra_px_margin_y + math.floor((grid_spaces_margin_y[0] + i) * grid_size + 0.5), 4)
+            for i in range(board_size_y)
+        ]
+
+        return gridpos_x, gridpos_y
+
+    def calculate_rotated_gridpos(self):
+        board_size_y, board_size_x = self.katrain.game.board_size
+        grid_spaces_margin_x, grid_spaces_margin_y = self.get_grid_spaces_margins()
+        h = round(self.height, 4)
+        w = round(self.width, 4)
+
+        x_grid_spaces, y_grid_spaces = self.calculate_grid_spaces(
+            board_size_x, board_size_y, grid_spaces_margin_x, grid_spaces_margin_y
+        )
+        grid_size = self.calculate_grid_size(w, h, x_grid_spaces, y_grid_spaces)
+        board_width_with_margins, board_height_with_margins = self.calculate_board_margins(
+            x_grid_spaces, y_grid_spaces, grid_size
+        )
+        extra_px_margin_x, extra_px_margin_y = self.calculate_extra_px_margins(
+            w, h, board_width_with_margins, board_height_with_margins
+        )
+
+        return self.initialize_gridpos_x_y(
+            board_size_x,
+            board_size_y,
+            grid_spaces_margin_x,
+            grid_spaces_margin_y,
+            extra_px_margin_x,
+            extra_px_margin_y,
+            grid_size,
+        )
+
+    def resize_board(self):
+        rotated_gridpos_x, rotated_gridpos_y = self.calculate_rotated_gridpos()
+
+        current_gridpos_x = []
+        current_gridpos_y = []
+
+        for yi in range(len(self.gridpos)):
+            for xi in range(len(self.gridpos[0])):
+                current_gridpos_x.append(self.gridpos[yi][xi][0])
+                current_gridpos_y.append(self.gridpos[yi][xi][1])
+        sorted_current_gridpos_x = list(set(current_gridpos_x))
+        sorted_current_gridpos_x.sort()
+        sorted_current_gridpos_y = list(set(current_gridpos_y))
+        sorted_current_gridpos_y.sort()
+
+        for yi in range(len(self.gridpos)):
+            for xi in range(len(self.gridpos[0])):
+                index_x = sorted_current_gridpos_x.index(self.gridpos[yi][xi][0])
+                index_y = sorted_current_gridpos_y.index(self.gridpos[yi][xi][1])
+                if self.rotation_degree == 90 or self.rotation_degree == 270:
+                    self.gridpos[yi][xi] = [rotated_gridpos_x[index_x], rotated_gridpos_y[index_y]]
+                else:
+                    self.gridpos[yi][xi] = [self.initial_gridpos_x[index_x], self.initial_gridpos_y[index_y]]
+
+    def draw_board_background(
+        self, katrain, gridpos_x, gridpos_y, x_grid_spaces, y_grid_spaces, grid_spaces_margin_x, grid_spaces_margin_y
+    ):
+        if katrain.game.insert_mode:
+            Color(*Theme.INSERT_BOARD_COLOR_TINT)  # dreamy
+        else:
+            Color(*Theme.BOARD_COLOR_TINT)  # image is a bit too light
+        Rectangle(
+            pos=(
+                gridpos_x[0] - self.grid_size * grid_spaces_margin_x[0],
+                gridpos_y[0] - self.grid_size * grid_spaces_margin_y[0],
+            ),
+            size=(self.grid_size * x_grid_spaces, self.grid_size * y_grid_spaces),
+            texture=cached_texture(Theme.BOARD_TEXTURE),
+        )
+
+    def draw_lines(self, gridpos_x, gridpos_y):
+        Color(*Theme.LINE_COLOR)
+        for i in range(len(gridpos_x)):
+            Line(points=[(gridpos_x[i], gridpos_y[0]), (gridpos_x[i], gridpos_y[-1])])
+        for i in range(len(gridpos_y)):
+            Line(points=[(gridpos_x[0], gridpos_y[i]), (gridpos_x[-1], gridpos_y[i])])
+
+    def draw_star_points(self, board_size_x, board_size_y):
+        def star_point_coords(size):
+            star_point_pos = 3 if size <= 11 else 4
+            if size < 7:
+                return []
+            return [star_point_pos - 1, size - star_point_pos] + ([int(size / 2)] if size % 2 == 1 and size > 7 else [])
+
+        starpt_size = self.grid_size * Theme.STARPOINT_SIZE
+        for x in star_point_coords(board_size_x):
+            for y in star_point_coords(board_size_y):
+                draw_circle((self.gridpos[y][x][0], self.gridpos[y][x][1]), starpt_size, Theme.LINE_COLOR)
+
+    def draw_coordinates(self, gridpos_x, gridpos_y):
+        if self.draw_coords_enabled:
+            board_size_x, board_size_y = self.katrain.game.board_size
+            Color(0.25, 0.25, 0.25)
+            coord_offset = round(self.grid_size * 1.5 / 2, 12)
+
+            if (self.rotation_degree == 90 or self.rotation_degree == 270) and board_size_x != board_size_y:
+                board_size_y, board_size_x = self.katrain.game.board_size
+
             for i in range(board_size_x):
-                Line(points=[(self.gridpos_x[i], self.gridpos_y[0]), (self.gridpos_x[i], self.gridpos_y[-1])])
+                draw_text(
+                    pos=(gridpos_x[i], gridpos_y[0] - coord_offset),
+                    text=self.get_x_coordinate_text(i, board_size_x),
+                    font_size=self.grid_size / 1.5,
+                    font_name="Roboto",
+                )
             for i in range(board_size_y):
-                Line(points=[(self.gridpos_x[0], self.gridpos_y[i]), (self.gridpos_x[-1], self.gridpos_y[i])])
-
-            # star points
-            def star_point_coords(size):
-                star_point_pos = 3 if size <= 11 else 4
-                if size < 7:
-                    return []
-                return [star_point_pos - 1, size - star_point_pos] + (
-                    [int(size / 2)] if size % 2 == 1 and size > 7 else []
+                draw_text(
+                    pos=(gridpos_x[0] - coord_offset, gridpos_y[i]),
+                    text=self.get_y_coordinate_text(i, board_size_y),
+                    font_size=self.grid_size / 1.5,
+                    font_name="Roboto",
                 )
 
-            starpt_size = self.grid_size * Theme.STARPOINT_SIZE
-            for x in star_point_coords(board_size_x):
-                for y in star_point_coords(board_size_y):
-                    draw_circle((self.gridpos_x[x], self.gridpos_y[y]), starpt_size, Theme.LINE_COLOR)
+    def get_x_coordinate_text(self, i, board_size_x):
+        x_text = Move.GTP_COORD[i]
+        if self.rotation_degree == 90:
+            x_text = str(i + 1)
+        elif self.rotation_degree == 180:
+            x_text = Move.GTP_COORD[board_size_x - i - 1]
+        elif self.rotation_degree == 270:
+            x_text = str(board_size_x - i)
+        return x_text
 
-            # coordinates
-            if self.draw_coords_enabled:
-                Color(0.25, 0.25, 0.25)
-                coord_offset = self.grid_size * 1.5 / 2
-                for i in range(board_size_x):
-                    draw_text(
-                        pos=(self.gridpos_x[i], self.gridpos_y[0] - coord_offset),
-                        text=Move.GTP_COORD[i],
-                        font_size=self.grid_size / 1.5,
-                        font_name="Roboto",
-                    )
-                for i in range(board_size_y):
-                    draw_text(
-                        pos=(self.gridpos_x[0] - coord_offset, self.gridpos_y[i]),
-                        text=str(i + 1),
-                        font_size=self.grid_size / 1.5,
-                        font_name="Roboto",
-                    )
+    def get_y_coordinate_text(self, i, board_size_y):
+        y_text = str(i + 1)
+        if self.rotation_degree == 90:
+            y_text = Move.GTP_COORD[board_size_y - i - 1]
+        elif self.rotation_degree == 180:
+
+            y_text = str(board_size_y - i)
+        elif self.rotation_degree == 270:
+            y_text = Move.GTP_COORD[i]
+        return y_text
 
     def draw_board_contents(self, *_args):
         if not (self.katrain and self.katrain.game):
             return
         katrain = self.katrain
         board_size_x, board_size_y = katrain.game.board_size
-        if len(self.gridpos_x) < board_size_x or len(self.gridpos_y) < board_size_y:
+        if self.gridpos is None or len(self.gridpos) < board_size_y or len(self.gridpos[0]) < board_size_x:
             return  # race condition
         show_n_eval = self.trainer_config.get("eval_on_show_last", 3)
+        ownership_grid = None
+        loss_grid = None
 
         with self.canvas:
             self.canvas.clear()
@@ -367,32 +609,15 @@ class BadukPanWidget(Widget):
                         [a - b for a, b in zip(current_node.children[-1].ownership, ownership)],
                         (board_size_x, board_size_y),
                     )
-
                     for y in range(board_size_y - 1, -1, -1):
                         for x in range(board_size_x):
-                            loss = max(0, (-1 if current_node.children[-1].move.player == "B" else 1) * loss_grid[y][x])
-                            if loss > 0:
-                                Color(*Theme.EVAL_COLORS[self.trainer_config["theme"]][1][:3], loss)
-                                Rectangle(
-                                    pos=(
-                                        self.gridpos_x[x] - self.grid_size / 2,
-                                        self.gridpos_y[y] - self.grid_size / 2,
-                                    ),
-                                    size=(self.grid_size, self.grid_size),
-                                )
+                            loss_grid[y][x] = max(
+                                0, (-1 if current_node.children[-1].move.player == "B" else 1) * loss_grid[y][x]
+                            )
+                    self.draw_territory(loss_grid, Theme.EVAL_COLORS[self.trainer_config["theme"]][1][:3])
                 else:
                     ownership_grid = var_to_grid(ownership, (board_size_x, board_size_y))
-                    for y in range(board_size_y - 1, -1, -1):
-                        for x in range(board_size_x):
-                            ix_owner = "B" if ownership_grid[y][x] > 0 else "W"
-                            Color(
-                                *Theme.STONE_COLORS[ix_owner][:3], abs(ownership_grid[y][x]) * Theme.OWNERSHIP_MAX_ALPHA
-                            )
-                            Rectangle(
-                                pos=(self.gridpos_x[x] - self.grid_size * 0.4, self.gridpos_y[y] - self.grid_size * 0.4),
-                                size=(self.grid_size * 0.8, self.grid_size * 0.8),
-                            )
-
+                    self.draw_territory(ownership_grid)
             # stones
             all_dots_off = not katrain.analysis_controls.eval.active
             has_stone = {}
@@ -417,6 +642,9 @@ class BadukPanWidget(Widget):
                         evalscale = min(1, max(0, realized_points_lost / points_lost))
                 placements = node.placements
                 for m in node.moves + placements:
+                    new_move = (
+                        current_node.move and m.coords == current_node.move.coords
+                    ) and not current_node.ownership
                     if has_stone.get(m.coords) and not drawn_stone.get(m.coords):  # skip captures, last only for
                         move_eval_on = not all_dots_off and show_dots_for.get(m.player) and i < show_n_eval
                         if move_eval_on and points_lost is not None:
@@ -432,6 +660,10 @@ class BadukPanWidget(Widget):
                             innercol=inner,
                             evalcol=evalcol,
                             evalscale=evalscale,
+                            ownership=ownership_grid[m.coords[1]][m.coords[0]]
+                            if ownership_grid and not loss_grid and not new_move
+                            else None,
+                            loss=loss_grid[m.coords[1]][m.coords[0]] if loss_grid else None,
                         )
                 realized_points_lost = node.parent_realized_points_lost
 
@@ -470,7 +702,7 @@ class BadukPanWidget(Widget):
                         pol_order = max(0, 5 + int(math.log10(max(1e-9, move_policy - 1e-9))))
                         if move_policy > text_lb:
                             draw_circle(
-                                (self.gridpos_x[x], self.gridpos_y[y]),
+                                (self.gridpos[y][x][0], self.gridpos[y][x][1]),
                                 self.stone_size * Theme.HINT_SCALE * 0.98,
                                 Theme.APPROX_BOARD_COLOR,
                             )
@@ -478,14 +710,14 @@ class BadukPanWidget(Widget):
                         else:
                             scale = 0.5
                         draw_circle(
-                            (self.gridpos_x[x], self.gridpos_y[y]),
+                            (self.gridpos[y][x][0], self.gridpos[y][x][1]),
                             Theme.HINT_SCALE * self.stone_size * scale,
                             (*colors[pol_order][:3], Theme.POLICY_ALPHA),
                         )
                         if move_policy > text_lb:
                             Color(*Theme.HINT_TEXT_COLOR)
                             draw_text(
-                                pos=(self.gridpos_x[x], self.gridpos_y[y]),
+                                pos=(self.gridpos[y][x][0], self.gridpos[y][x][1]),
                                 text=f"{100 * move_policy :.2f}"[:4] + "%",
                                 font_name="Roboto",
                                 font_size=self.grid_size / 4,
@@ -495,8 +727,8 @@ class BadukPanWidget(Widget):
                             Color(*Theme.TOP_MOVE_BORDER_COLOR[:3], Theme.POLICY_ALPHA)
                             Line(
                                 circle=(
-                                    self.gridpos_x[x],
-                                    self.gridpos_y[y],
+                                    self.gridpos[y][x][0],
+                                    self.gridpos[y][x][1],
                                     self.stone_size - dp(1.2),
                                 ),
                                 width=dp(2),
@@ -514,15 +746,118 @@ class BadukPanWidget(Widget):
 
         self.redraw_hover_contents_trigger()
 
-    def draw_roi_box(self, region_of_interest, width=2):
-        xmin, xmax, ymin, ymax = region_of_interest
+    def draw_territory(self, grid, loss_color=None):
+        if Theme.TERRITORY_DISPLAY == "marks":
+            self.draw_territory_marks(grid, loss_color)
+        else:
+            self.draw_territory_color(grid, loss_color)
+
+    def draw_territory_marks(self, grid, loss_color=None):
+        board_size_x, board_size_y = self.katrain.game.board_size
+        for y in range(board_size_y - 1, -1, -1):
+            for x in range(board_size_x):
+                if abs(grid[y][x]) < 0.01:
+                    continue
+                (ix_owner, other) = ("B", "W") if grid[y][x] > 0 else ("W", "B")
+                if loss_color is None:
+                    Color(*Theme.STONE_COLORS[ix_owner][:3], 1.0)
+                else:
+                    Color(*loss_color[:3], 1.0)
+                rect_size = Theme.MARK_SIZE * min(1.0, abs(grid[y][x])) * self.stone_size * 2.0
+                Rectangle(
+                    pos=(
+                        self.gridpos[y][x][0] - rect_size / 2,
+                        self.gridpos[y][x][1] - rect_size / 2,
+                    ),
+                    # radius=[rect_size / 4],
+                    size=(rect_size, rect_size),
+                )
+
+    def draw_territory_color(self, grid, loss_color=None):
+        # This draws the expected black and white territories, or the loss during a teching game.
+        # We draw a blended territory by creating a small texture of size 19x19 (more precisely board_size)
+        # and painting it over the whole board. This causes Kivy to produce a smooth texture.
+
+        # We add extra rows and columns (so the texture for a 19x19 board is actually 21x21)
+        # in order to ensure smooth rolloff of the painted area at the edges. The alpha in the
+        # extra rows is 0.
+
+        board_size_x, board_size_y = self.katrain.game.board_size
+        texture = Texture.create(size=(board_size_x + 2, board_size_y + 2), colorfmt="rgba")
+        bytes = bytearray(4 * (board_size_y + 2) * (board_size_x + 2))
+        for y in range(board_size_y + 2):
+            for x in range(board_size_x + 2):
+                x_coord = x - 1
+                y_coord = y - 1
+
+                if x_coord < 0 or x_coord > board_size_x - 1 or y_coord < 0 or y_coord > board_size_y - 1:
+                    # We're in the extra rows/columns outside the board
+                    alpha = 0
+                else:
+                    alpha = abs(grid[y_coord][x_coord])
+                    if alpha > 1:
+                        alpha = 1
+                    if Theme.TERRITORY_DISPLAY == "blocks":
+                        alpha = 1 if alpha > Theme.BLOCKS_THRESHOLD else 0
+                alpha = alpha ** (1.0 / Theme.OWNERSHIP_GAMMA)
+
+                x_coord = max(0, min(x_coord, board_size_x - 1))
+                y_coord = max(0, min(y_coord, board_size_y - 1))
+
+                ix_owner = "B" if grid[y_coord][x_coord] > 0 else "W"
+                if loss_color is None:
+                    pixel = Theme.OWNERSHIP_COLORS[ix_owner][:4]
+                    pixel[3] *= alpha
+                else:
+                    pixel = *loss_color, Theme.HINTS_ALPHA * alpha
+                pixel = tuple(map(lambda p: int(p * 255), pixel))
+                idx = 4 * y * (board_size_x + 2) + x * 4
+                bytes[idx : idx + 4] = pixel
+
+        if Theme.TERRITORY_DISPLAY == "blocks" or Theme.TERRITORY_DISPLAY == "shaded":
+            texture.mag_filter = "nearest"
+        texture.blit_buffer(bytes, colorfmt="rgba", bufferfmt="ubyte")
+        Color(1, 1, 1, 1)
+        lx = board_size_x - 1
+        ly = board_size_y - 1
+        left = min(self.gridpos[0][0][1], self.gridpos[ly][lx][1])
+        bottom = min(self.gridpos[0][0][0], self.gridpos[ly][lx][0])
+
+        # Our texture is 3 squares larger than the grid of lines: we added 2 rows/columns
+        # for the edge blending, and the additional 1 is because the grid of
+        # intersections is 1 smaller than the board state. We will shift the texture by 3/2 square
+        # to align it.
+        left = left - self.grid_size * 3 / 2
+        bottom = bottom - self.grid_size * 3 / 2
+
+        PushMatrix()
+
+        Rotate(origin=(bottom, left), axis=(0, 0, 1), angle=-self.rotation_degree)
+        if self.rotation_degree in (90, 180):
+            Translate(-self.grid_size * (board_size_x + 2), 0, 0)
+        if self.rotation_degree in (180, 270):
+            Translate(0, -self.grid_size * (board_size_y + 2), 0)
+
+        Rectangle(
+            pos=(bottom, left),
+            size=(self.grid_size * (board_size_x + 2), self.grid_size * (board_size_y + 2)),
+            texture=texture,
+        )
+
+        PopMatrix()
+
+    def draw_roi_box(self, region_of_interest, width: float = 2):
+        x1, x2, y1, y2 = region_of_interest
+        x_start, y_start = self.gridpos[y1][x1]
+        x_end, y_end = self.gridpos[y2][x2]
+
         Color(*Theme.REGION_BORDER_COLOR)
         Line(
             rectangle=(
-                self.gridpos_x[xmin] - self.grid_size / 3,
-                self.gridpos_y[ymin] - self.grid_size / 3,
-                (xmax - xmin + 2 / 3) * self.grid_size,
-                (ymax - ymin + 2 / 3) * self.grid_size,
+                min(x_start, x_end) - self.grid_size / 3,
+                min(y_start, y_end) - self.grid_size / 3,
+                abs(x_start - x_end) + (2 / 3) * self.grid_size,
+                abs(y_start - y_end) + (2 / 3) * self.grid_size,
             ),
             width=width,
         )
@@ -545,7 +880,7 @@ class BadukPanWidget(Widget):
         next_player = current_node.next_player
 
         board_size_x, board_size_y = katrain.game.board_size
-        if len(self.gridpos_x) < board_size_x or len(self.gridpos_y) < board_size_y:
+        if len(self.gridpos[0]) < board_size_x or len(self.gridpos) < board_size_y:
             return  # race condition
 
         with self.canvas.after:
@@ -596,6 +931,9 @@ class BadukPanWidget(Widget):
                             text_on = False
                             alpha = Theme.HINTS_LO_ALPHA
 
+                        if scale <= 0:  # if theme turns hints off, do not draw them
+                            continue
+
                         if "pv" in move_dict:
                             self.active_pv_moves.append((move.coords, move_dict["pv"], current_node))
                         else:
@@ -604,14 +942,20 @@ class BadukPanWidget(Widget):
                         evalcol = self.eval_color(move_dict["pointsLost"])
                         if text_on and top_moves_show:  # remove grid lines using a board colored circle
                             draw_circle(
-                                (self.gridpos_x[move.coords[0]], self.gridpos_y[move.coords[1]]),
+                                (
+                                    self.gridpos[move.coords[1]][move.coords[0]][0],
+                                    self.gridpos[move.coords[1]][move.coords[0]][1],
+                                ),
                                 self.stone_size * scale * 0.98,
                                 Theme.APPROX_BOARD_COLOR,
                             )
 
                         Color(*evalcol[:3], alpha)
                         Rectangle(
-                            pos=(self.gridpos_x[move.coords[0]] - evalsize, self.gridpos_y[move.coords[1]] - evalsize),
+                            pos=(
+                                self.gridpos[move.coords[1]][move.coords[0]][0] - evalsize,
+                                self.gridpos[move.coords[1]][move.coords[0]][1] - evalsize,
+                            ),
                             size=(2 * evalsize, 2 * evalsize),
                             texture=cached_texture(Theme.TOP_MOVE_TEXTURE),
                         )
@@ -642,7 +986,10 @@ class BadukPanWidget(Widget):
 
                             Color(*Theme.HINT_TEXT_COLOR)
                             draw_text(
-                                pos=(self.gridpos_x[move.coords[0]], self.gridpos_y[move.coords[1]]),
+                                pos=(
+                                    self.gridpos[move.coords[1]][move.coords[0]][0],
+                                    self.gridpos[move.coords[1]][move.coords[0]][1],
+                                ),
                                 text=fmt.format(**keys),
                                 font_name="Roboto",
                                 markup=True,
@@ -655,8 +1002,8 @@ class BadukPanWidget(Widget):
                             Color(*Theme.TOP_MOVE_BORDER_COLOR)
                             Line(
                                 circle=(
-                                    self.gridpos_x[move.coords[0]],
-                                    self.gridpos_y[move.coords[1]],
+                                    self.gridpos[move.coords[1]][move.coords[0]][0],
+                                    self.gridpos[move.coords[1]][move.coords[0]][1],
                                     self.stone_size - dp(1.2),
                                 ),
                                 width=dp(1.2),
@@ -677,8 +1024,8 @@ class BadukPanWidget(Widget):
                             Color(*Theme.NEXT_MOVE_DASH_CONTRAST_COLORS[child_node.player])
                             Line(
                                 circle=(
-                                    self.gridpos_x[move.coords[0]],
-                                    self.gridpos_y[move.coords[1]],
+                                    self.gridpos[move.coords[1]][move.coords[0]][0],
+                                    self.gridpos[move.coords[1]][move.coords[0]][1],
                                     self.stone_size - dp(1.2),
                                 ),
                                 width=dp(1.2),
@@ -689,8 +1036,8 @@ class BadukPanWidget(Widget):
                         for s in range(0, 360, 30):
                             Line(
                                 circle=(
-                                    self.gridpos_x[move.coords[0]],
-                                    self.gridpos_y[move.coords[1]],
+                                    self.gridpos[move.coords[1]][move.coords[0]][0],
+                                    self.gridpos[move.coords[1]][move.coords[0]][1],
                                     self.stone_size - dp(1.2),
                                     s,
                                     s + dashed_width,
@@ -699,8 +1046,7 @@ class BadukPanWidget(Widget):
                             )
 
             if self.selecting_region_of_interest and len(self.region_of_interest) == 4:
-                x1, x2, y1, y2 = self.region_of_interest
-                self.draw_roi_box([min(x1, x2), max(x1, x2), min(y1, y2), max(y1, y2)], width=dp(2))
+                self.draw_roi_box(self.region_of_interest, width=dp(2))
             else:
                 # hover next move ghost stone
                 if self.ghost_stone:
@@ -723,7 +1069,7 @@ class BadukPanWidget(Widget):
                 else:
                     text = i18n._("board-pass")
                 Color(*Theme.PASS_CIRCLE_COLOR)
-                center = (self.gridpos_x[int(board_size_x / 2)], self.gridpos_y[int(board_size_y / 2)])
+                center = (self.initial_gridpos_x[int(board_size_x / 2)], self.initial_gridpos_y[int(board_size_y / 2)])
                 size = min(self.width, self.height) * 0.227
                 Ellipse(pos=(center[0] - size / 2, center[1] - size / 2), size=(size, size))
                 Color(*Theme.PASS_CIRCLE_TEXT_COLOR)
@@ -741,7 +1087,10 @@ class BadukPanWidget(Widget):
             hide_node = cn
             while hide_node and hide_node.move and hide_node != node:
                 if not hide_node.move.is_pass:
-                    pos = (self.gridpos_x[hide_node.move.coords[0]], self.gridpos_y[hide_node.move.coords[1]])
+                    pos = (
+                        self.gridpos[hide_node.move.coords[1]][hide_node.move.coords[0]][0],
+                        self.gridpos[hide_node.move.coords[1]][hide_node.move.coords[0]][1],
+                    )
                     draw_circle(pos, self.stone_size, [0.85, 0.68, 0.40, 0.8])
                 hide_node = hide_node.parent
         for i, gtpmove in enumerate(pv):
@@ -758,7 +1107,7 @@ class BadukPanWidget(Widget):
                     katrain.board_controls.pass_btn.pos[1] + katrain.board_controls.pass_btn.size[1] / 2,
                 ]
             else:
-                board_coords = (self.gridpos_x[coords[0]], self.gridpos_y[coords[1]])
+                board_coords = (self.gridpos[coords[1]][coords[0]][0], self.gridpos[coords[1]][coords[0]][1])
                 sizefac = 1
 
             stone_size = self.stone_size * sizefac
@@ -795,15 +1144,58 @@ class BadukPanWidget(Widget):
 
         return self.animating_pv_index
 
+    def rotate_gridpos(self):
+        board_size_x, board_size_y = self.katrain.game.board_size
+        if board_size_x != board_size_y:
+            if self.rotation_degree == 90 or self.rotation_degree == 270:
+                rotated_gridpos_x, rotated_gridpos_y = self.calculate_rotated_gridpos()
+                diff = round(abs(rotated_gridpos_x[0] - rotated_gridpos_y[0]), 4)
+                x0 = rotated_gridpos_x[0]
+                y0 = rotated_gridpos_y[0]
+            else:
+                diff = round(abs(self.initial_gridpos_x[0] - self.initial_gridpos_y[0]), 4)
+                x0 = self.initial_gridpos_x[0]
+                y0 = self.initial_gridpos_y[0]
+
+            pos = copy.deepcopy(self.gridpos)
+            for yi in range(len(self.gridpos)):
+                for xi in range(len(self.gridpos[0])):
+                    if self.rotation_degree == 90 or self.rotation_degree == 270:
+                        gridpos_x = pos[len(self.gridpos) - 1 - yi][:]
+                    else:
+                        gridpos_x = pos[yi][:]
+                        gridpos_x.reverse()
+                    x = pos[yi][xi][1]
+                    y = gridpos_x[xi][0]
+                    if x0 > y0:
+                        x = round(x + diff, 4)
+                        y = round(y - diff, 4)
+                    elif y0 > x0:
+                        x = round(x - diff, 4)
+                        y = round(y + diff, 4)
+                    self.gridpos[yi][xi] = [x, y]
+        else:
+            # This is a rot90 for list of lists. Based on the code found in
+            # stackoverflow.com/questions/8421337/rotating-a-two-dimensional-array-in-python
+            self.gridpos = list(list(x) for x in zip(*reversed(self.gridpos)))
+
+        self.rotation_degree += 90
+        if self.rotation_degree == 360:
+            self.rotation_degree = 0
+        if board_size_x != board_size_y:
+            self.resize_board()
+        Clock.schedule_once(self.redraw)
+
     def show_pv_from_comments(self, pv_str):
         self.set_animating_pv(pv_str[1:].split(" "), self.katrain.controls.active_comment_node.parent)
 
 
 class AnalysisDropDown(DropDown):
     def open_game_analysis_popup(self, *_args):
-        analysis_popup = I18NPopup(title_key="analysis:game", size=[dp(500), dp(350)], content=ReAnalyzeGamePopup())
+        analysis_popup = I18NPopup(
+            title_key="analysis:game", size=[dp(500), dp(350)], content=ReAnalyzeGamePopup(MDApp.get_running_app().gui)
+        )
         analysis_popup.content.popup = analysis_popup
-        analysis_popup.content.katrain = MDApp.get_running_app().gui
         analysis_popup.open()
 
     def open_report_popup(self, *_args):

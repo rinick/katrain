@@ -272,6 +272,9 @@
             icon: 'Next-Mistake.png'
             color: Theme.MISTAKE_BUTTON_COLOR
             on_press: root.katrain('find-mistake','redo')
+        NavIconButton:
+            icon: 'Rotate.png'
+            on_press: root.katrain('rotate')
     ClickableLabel:
         pos_hint: {'center_x': 0.85,'center_y':0.5}
         size_hint: None, 1
@@ -733,6 +736,7 @@
     size_hint: None, 0.7
     pos_hint: {'center_y':0.5}
     checkbox: checkbox
+    label: label
     ClickableLabel:
         id: label
         text: root.text

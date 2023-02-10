@@ -64,10 +64,11 @@ class Theme:
     EVAL_DOT_TEXTURE = "dot.png"
     LAST_MOVE_TEXTURE = "inner.png"
     TOP_MOVE_TEXTURE = "topmove.png"
-    BOARD_TEXTURE = "board.png"
+    BOARD_TEXTURE = "wood6.jpg"  # "board.png"
     GRAPH_TEXTURE = "graph_bg.png"
     # sounds
     STONE_SOUNDS = [f"stone{i}.wav" for i in [1, 2, 3, 4, 5]]
+    CAPTURING_SOUND = "capturing.wav"
     COUNTDOWN_SOUND = "countdownbeep.wav"
     MINIMUM_TIME_PASSED_SOUND = "boing.wav"
     MISTAKE_SOUNDS = []
@@ -97,12 +98,12 @@ class Theme:
 
     # board theme
     APPROX_BOARD_COLOR = [0.95, 0.75, 0.47, 1]  # for drawing on top of / hiding what's under it
-    BOARD_COLOR_TINT = [1, 0.95, 0.8, 1]  # multiplied by texture
+    BOARD_COLOR_TINT = [1, 1, 1, 1]  # multiplied by texture
 
     HINT_TEXT_COLOR = BLACK
 
     REGION_BORDER_COLOR = LIGHTER_BACKGROUND_COLOR
-    INSERT_BOARD_COLOR_TINT = [1, 1, 1, 0.75]
+    INSERT_BOARD_COLOR_TINT = [1, 1, 1, 0.6]
     PASS_CIRCLE_COLOR = [0.45, 0.05, 0.45, 0.7]
     PASS_CIRCLE_TEXT_COLOR = [0.85, 0.85, 0.85]
 
@@ -119,7 +120,17 @@ class Theme:
 
     GHOST_ALPHA = 0.6
     POLICY_ALPHA = 0.5
-    OWNERSHIP_MAX_ALPHA = 0.7  # max ownership brightness
+    OWNERSHIP_COLORS = {"B": [0.0, 0.0, 0.10, 0.75], "W": [0.92, 0.92, 1.0, 0.800]}
+    OWNERSHIP_GAMMA = 1.33
+    STONE_MIN_ALPHA = 0.85  # the minimal alpha for dead/weak stones
+
+    TERRITORY_DISPLAY = "blended"  # other possibilities are "marks", "blocks" or "shaded"
+    BLOCKS_THRESHOLD = 0.3  # in "blocks" mode, territory which is this likely to be
+    #                          a certain player's gets his color
+    STONE_MARKS = "weak"  # all: always display marks on stones
+    #                       none: no marks on stones, indicate ownership by transparency only (if STONE_MIN_ALPHA < 1.0)
+    #                       weak: draw marks only on stones likely (>50%) to be captured
+    MARK_SIZE = 0.42  # stone mark size as fraction of stone size
 
     HINTS_LO_ALPHA = 0.6
     HINTS_ALPHA = 0.8
